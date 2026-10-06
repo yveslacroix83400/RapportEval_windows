@@ -1,0 +1,54 @@
+# Environnements Python
+.venv/
+.venv-*/
+venv/
+
+# Sorties PyInstaller
+build/
+dist/
+
+# Caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches des outils
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VS Code
+.vscode/
+
+# Journaux et fichiers temporaires
+*.log
+*.tmp
+
+# Windows et macOS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Secrets
+.env
+.env.*
+*.key
+secrets.json
+
+# Dépendances Node.js
+node_modules/
+
+# Fichiers PyInstaller
+*.toc
+*.pyz
+*.pkg
+
+# Archives et installateurs générés
+*.zip
+*.exe
+*.msi
+*.iss.tmp
+
+# Sauvegardes locales
+*.backup
+*.bak

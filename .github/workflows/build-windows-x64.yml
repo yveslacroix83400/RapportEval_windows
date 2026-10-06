@@ -1,0 +1,179 @@
+name: Build RapportEval Windows x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows AMD64
+    runs-on: windows-2022
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer Python x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: requirements-windows.txt
+
+      - name: Vérifier l’architecture Python
+        shell: pwsh
+        run: |
+          python -c "import sys, platform; print(sys.executable); print(platform.machine()); print(platform.architecture())"
+
+          $architecture = python -c "import platform; print(platform.machine())"
+
+          if ($architecture.Trim() -ne "AMD64") {
+            throw "Python n'est pas AMD64 : $architecture"
+          }
+
+      - name: Installer les dépendances Python
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-windows.txt
+
+      - name: Installer Node.js x64
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: "x64"
+          cache: "npm"
+          cache-dependency-path: Engine/package-lock.json
+
+      - name: Installer les modules Node
+        shell: pwsh
+        run: |
+          npm ci --prefix Engine
+
+      - name: Vérifier les dépendances
+        shell: pwsh
+        run: |
+          python --version
+          python -m PyInstaller --version
+          node --version
+          npm --version
+
+          python -c "import PySide6; print('PySide6', PySide6.__version__)"
+          python -c "import keyring; print('keyring disponible')"
+          python -c "import pandas; print('pandas', pandas.__version__)"
+          python -c "import numpy; print('numpy', numpy.__version__)"
+          python -c "import openpyxl; print('openpyxl', openpyxl.__version__)"
+          python -c "import openai; print('openai', openai.__version__)"
+
+      - name: Nettoyer les anciens builds
+        shell: pwsh
+        run: |
+          Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Construire avec PyInstaller
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --clean `
+            --noconfirm `
+            RapportEval.spec
+
+      - name: Copier le moteur
+        shell: pwsh
+        run: |
+          $destination = "dist/RapportEval/Engine"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force
+
+          Copy-Item `
+            "Engine/cli_generate.py" `
+            "$destination/cli_generate.py"
+
+          Copy-Item `
+            "Engine/generate.js" `
+            "$destination/generate.js"
+
+          Copy-Item `
+            "Engine/logo_seatech.png" `
+            "$destination/logo_seatech.png"
+
+          Copy-Item `
+            "Engine/package.json" `
+            "$destination/package.json"
+
+          Copy-Item `
+            "Engine/package-lock.json" `
+            "$destination/package-lock.json"
+
+          Copy-Item `
+            "Engine/node_modules" `
+            "$destination/node_modules" `
+            -Recurse
+
+      - name: Vérifier le résultat
+        shell: pwsh
+        run: |
+          $exe = "dist/RapportEval/RapportEval.exe"
+
+          if (-not (Test-Path $exe)) {
+            throw "RapportEval.exe n'a pas été généré."
+          }
+
+          $required = @(
+            "dist/RapportEval/Engine/cli_generate.py",
+            "dist/RapportEval/Engine/generate.js",
+            "dist/RapportEval/Engine/logo_seatech.png",
+            "dist/RapportEval/Engine/node_modules/pptxgenjs"
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              throw "Fichier ou dossier manquant : $path"
+            }
+          }
+
+          Get-ChildItem "dist/RapportEval" |
+            Select-Object Name, Length
+
+      - name: Créer le ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist/RapportEval/*" `
+            -DestinationPath "RapportEval-Windows-x64.zip" `
+            -Force
+
+      - name: Générer le SHA-256
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash `
+            "RapportEval-Windows-x64.zip" `
+            -Algorithm SHA256
+
+          "$($hash.Hash)  RapportEval-Windows-x64.zip" |
+            Out-File `
+              "RapportEval-Windows-x64.sha256.txt" `
+              -Encoding ascii
+
+          Get-Content "RapportEval-Windows-x64.sha256.txt"
+
+      - name: Publier l’artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RapportEval-Windows-x64
+          path: |
+            RapportEval-Windows-x64.zip
+            RapportEval-Windows-x64.sha256.txt
+          if-no-files-found: error
+          retention-days: 30
