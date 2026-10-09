@@ -35,9 +35,9 @@ class ReportController(QObject):
     generation_started = Signal()
     generation_finished = Signal(str)
     generation_failed = Signal(str)
-    
+
     running_changed = Signal(bool)
-    
+
 
     def __init__(
         self,
@@ -53,6 +53,7 @@ class ReportController(QObject):
         self.current_json_path = ""
         self.current_pptx_path = ""
         self.current_payload = None
+        self.process_error_lines = []
 
     def prepare_report(
         self,
@@ -84,7 +85,7 @@ class ReportController(QObject):
         arguments = command["arguments"]
         engine_path = command["engine_path"]
         api_key = command["api_key"]
-
+        self.process_error_lines = []
         self.process = QProcess(self)
         self.process.setProgram(python_path)
         self.process.setArguments(arguments)
@@ -138,6 +139,14 @@ class ReportController(QObject):
         )
         self.log_received.emit(
             f"JSON intermédiaire : {self.current_json_path}"
+        )
+
+        self.log_received.emit(
+            f"Interpréteur Python : {python_path}"
+        )
+
+        self.log_received.emit(
+            f"Dossier moteur : {engine_path}"
         )
 
         self.process.start()
@@ -487,7 +496,7 @@ class ReportController(QObject):
         )
 
         self.process_mode = "generation"
-
+        self.process_error_lines = []
         self.process = QProcess(self)
         self.process.setProgram(
             str(node_path)
@@ -547,6 +556,14 @@ class ReportController(QObject):
 
         self.log_received.emit(
             f"PowerPoint de sortie : {output_path}"
+        )
+
+        self.log_received.emit(
+            f"Exécutable Node.js : {node_path}"
+        )
+
+        self.log_received.emit(
+            f"Dossier moteur : {engine_path}"
         )
 
         self.process.start()
@@ -654,10 +671,22 @@ class ReportController(QObject):
             errors="replace",
         )
 
-        self.emit_log_lines(
-            text,
-            prefix="Moteur : ",
-        )
+        for line in text.splitlines():
+            cleaned = line.strip()
+
+            if not cleaned:
+                continue
+
+            self.process_error_lines.append(cleaned)
+
+            if len(self.process_error_lines) > 200:
+                self.process_error_lines = (
+                    self.process_error_lines[-200:]
+                )
+
+            self.log_received.emit(
+                f"Moteur : {cleaned}"
+            )
 
     def emit_log_lines(
         self,
@@ -672,6 +701,74 @@ class ReportController(QObject):
                     f"{prefix}{cleaned}"
                 )
 
+    def save_process_error_log(
+        self,
+        process_name: str,
+        exit_code: int,
+    ) -> str:
+        """
+        Enregistre les erreurs du processus dans un fichier
+        de diagnostic placé dans le dossier temporaire.
+        """
+
+        if not self.process_error_lines:
+            return ""
+
+        log_directory = (
+            Path(tempfile.gettempdir())
+            / "RapportEval"
+            / "logs"
+        )
+
+        try:
+            log_directory.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            timestamp = datetime.now().strftime(
+                "%Y%m%d-%H%M%S"
+            )
+
+            log_path = (
+                log_directory
+                / (
+                    f"{process_name}_"
+                    f"{timestamp}_"
+                    f"code_{exit_code}.log"
+                )
+            )
+
+            log_content = "\n".join(
+                [
+                    f"Processus : {process_name}",
+                    f"Code de sortie : {exit_code}",
+                    (
+                        "Date : "
+                        f"{datetime.now().isoformat(timespec='seconds')}"
+                    ),
+                    "",
+                    "Détail des erreurs :",
+                    *self.process_error_lines,
+                    "",
+                ]
+            )
+
+            log_path.write_text(
+                log_content,
+                encoding="utf-8",
+            )
+
+            return str(log_path)
+
+        except OSError as error:
+            self.log_received.emit(
+                "Impossible d’enregistrer le journal "
+                f"d’erreur : {error}"
+            )
+
+            return ""
+
     def on_process_error(
         self,
         process_error,
@@ -681,7 +778,14 @@ class ReportController(QObject):
         if self.process is None:
             return
 
-        message = self.process.errorString()
+        message = self.process.errorString().strip()
+
+        if not message:
+            message = "Erreur de processus non détaillée."
+
+        self.process_error_lines.append(
+            f"Erreur de processus : {message}"
+        )
 
         self.log_received.emit(
             f"Erreur de processus : {message}"
@@ -692,10 +796,21 @@ class ReportController(QObject):
         exit_code: int,
         exit_status,
         ):
-        del exit_status
-
         self.read_standard_output()
         self.read_standard_error()
+
+        if (
+            exit_status
+            == QProcess.ExitStatus.CrashExit
+        ):
+            status_text = "arrêt brutal"
+        else:
+            status_text = "fin normale"
+
+        self.log_received.emit(
+            "Fin du processus : "
+            f"{status_text}, code {exit_code}."
+        )
 
         self.running_changed.emit(False)
 
@@ -722,10 +837,42 @@ class ReportController(QObject):
         )
 
         if exit_code != 0:
-            self.preparation_failed.emit(
+            log_path = self.save_process_error_log(
+                "moteur_python",
+                exit_code,
+            )
+
+            details = "\n".join(
+                self.process_error_lines[-20:]
+            )
+
+            message = (
                 "Le moteur Python s’est arrêté avec "
                 f"le code {exit_code}."
             )
+
+            if details:
+                message += (
+                    "\n\nDétail de l’erreur :\n"
+                    f"{details}"
+                )
+            else:
+                message += (
+                    "\n\nAucun détail supplémentaire "
+                    "n’a été fourni par le moteur."
+                )
+
+            if log_path:
+                message += (
+                    "\n\nJournal complet :\n"
+                    f"{log_path}"
+                )
+
+                self.log_received.emit(
+                    f"Journal d’erreur : {log_path}"
+                )
+
+            self.preparation_failed.emit(message)
             return
 
         if not json_path.is_file():
@@ -769,10 +916,42 @@ class ReportController(QObject):
         )
 
         if exit_code != 0:
-            self.generation_failed.emit(
+            log_path = self.save_process_error_log(
+                "moteur_powerpoint",
+                exit_code,
+            )
+
+            details = "\n".join(
+                self.process_error_lines[-20:]
+            )
+
+            message = (
                 "Le moteur PowerPoint s’est arrêté "
                 f"avec le code {exit_code}."
             )
+
+            if details:
+                message += (
+                    "\n\nDétail de l’erreur :\n"
+                    f"{details}"
+                )
+            else:
+                message += (
+                    "\n\nAucun détail supplémentaire "
+                    "n’a été fourni par le moteur."
+                )
+
+            if log_path:
+                message += (
+                    "\n\nJournal complet :\n"
+                    f"{log_path}"
+                )
+
+                self.log_received.emit(
+                    f"Journal d’erreur : {log_path}"
+                )
+
+            self.generation_failed.emit(message)
             return
 
         if not output_path.is_file():
